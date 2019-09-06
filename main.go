@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 
 	"golang.org/x/net/html"
 )
@@ -32,11 +32,11 @@ type parseChan struct {
 
 var (
 	//THREADS - the number of threads
-	THREADS = flag.Int("tr", 1, "number of threads")
+	THREADS = flag.Int("tr", 2, "number of threads")
 	//URLFILE - the pass to the list of URLs
-	URLFILE = flag.String("URL", "input.txt", "the pass to the list of URLs")
-	//WaitGroup
-	wg sync.WaitGroup
+	URLFILE = flag.String("url", "input.txt", "the pass to the list of URLs")
+	//RESFILE - the pass to the output file
+	RESFILE = flag.String("res", "output.txt", "the pass to the output file")
 	//Preparing channel
 	parseURL = make(chan string)
 	parseRes = make(chan page)
@@ -96,14 +96,14 @@ func urlParser() {
 	for url := range parseCh.url {
 		resp, err := http.Get(url)
 		if err != nil {
-			panic(err)
-			// ...
+			parseCh.err <- err
+			continue
 		}
 		defer resp.Body.Close()
 		doc, err := html.Parse(resp.Body)
 		if err != nil {
-			panic(err)
-			// ...
+			parseCh.err <- err
+			continue
 		}
 
 		var pg page
@@ -128,11 +128,37 @@ func urlParser() {
 		f(doc)
 		parseCh.res <- pg
 	}
-	wg.Done()
 }
 
-func collector() {
+func collector(urlNumber int) []page {
+	resultList := make([]page, 0, urlNumber)
+	for i := 0; i < urlNumber; i++ {
+		select {
+		case result := <-parseCh.res:
+			resultList = append(resultList, result)
 
+		case urlErr := <-parseCh.err:
+			fmt.Println(urlErr)
+		}
+	}
+	return resultList
+}
+
+func output(result []page) {
+	file, err := os.Create(*RESFILE)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	jsonRes, err := json.MarshalIndent(result, "", "\t")
+	if err != nil {
+		panic(err)
+	}
+	_, err = file.Write(jsonRes)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func main() {
@@ -141,23 +167,20 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	wg.Add(1)
 	//Creating THREADS number of goroutines for parsing
 	go func() {
 		for i := 0; i < *THREADS; i++ {
-			wg.Add(1)
 			go urlParser()
 		}
-		wg.Done()
 	}()
 	//
-	wg.Add(1)
 	go func(urlList []string) {
 		for _, str := range urlList {
 			parseCh.url <- strings.TrimSuffix(str, "\n")
 		}
 		close(parseCh.url)
-		wg.Done()
 	}(urlList)
-	wg.Wait()
+	result := collector(len(urlList))
+	output(result)
+	fmt.Println(result)
 }
