@@ -5,25 +5,23 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
+	"sync"
 
-	"github.com/opesun/goquery"
+	"golang.org/x/net/html"
 )
 
-type element struct {
-	TagName string
-	Count   int32
-}
-
 type meta struct {
-	Status  uint16
-	Headers map[string]string
+	Status  int
+	Headers map[string][]string
 }
 
 type page struct {
 	URL      string
 	Meta     meta
-	Elements []element
+	Elements map[string]int
 }
 
 type parseChan struct {
@@ -34,9 +32,11 @@ type parseChan struct {
 
 var (
 	//THREADS - the number of threads
-	THREADS = flag.Int("tr", 4, "number of threads")
+	THREADS = flag.Int("tr", 1, "number of threads")
 	//URLFILE - the pass to the list of URLs
 	URLFILE = flag.String("URL", "input.txt", "the pass to the list of URLs")
+	//WaitGroup
+	wg sync.WaitGroup
 	//Preparing channel
 	parseURL = make(chan string)
 	parseRes = make(chan page)
@@ -75,7 +75,7 @@ func readURLs() ([]string, error) {
 	if _, err := urlFile.Seek(0, 0); err != nil {
 		return nil, err
 	}
-	listOfURLs := make([]string, 0, urlNumber)
+	urlList := make([]string, 0, urlNumber)
 	fmt.Println("Reading URLs...")
 	for {
 		str, err := reader.ReadString('\n')
@@ -86,35 +86,78 @@ func readURLs() ([]string, error) {
 				return nil, err
 			}
 		}
-		listOfURLs = append(listOfURLs, str)
+		urlList = append(urlList, str)
 	}
 	fmt.Println("URLs have been successfully read")
-	return listOfURLs, nil
+	return urlList, nil
 }
 
-func parse() {
+func urlParser() {
 	for url := range parseCh.url {
-		x, err := goquery.ParseUrl(url)
+		resp, err := http.Get(url)
+		if err != nil {
+			panic(err)
+			// ...
+		}
+		defer resp.Body.Close()
+		doc, err := html.Parse(resp.Body)
+		if err != nil {
+			panic(err)
+			// ...
+		}
+
+		var pg page
+		pg.Meta.Headers = make(map[string][]string)
+		pg.Elements = make(map[string]int)
+
+		pg.URL = url
+		pg.Meta.Status = resp.StatusCode
+		for k, val := range resp.Header {
+			pg.Meta.Headers[k] = val
+		}
+
+		var f func(*html.Node)
+		f = func(n *html.Node) {
+			if n.Type == html.ElementNode {
+				pg.Elements[n.Data] = pg.Elements[n.Data] + 1
+			}
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				f(c)
+			}
+		}
+		f(doc)
+		parseCh.res <- pg
 	}
+	wg.Done()
+}
+
+func collector() {
+
 }
 
 func main() {
 	flag.Parse()
-	listOfURLs, err := readURLs()
+	urlList, err := readURLs()
 	if err != nil {
 		panic(err)
 	}
+	wg.Add(1)
 	//Creating THREADS number of goroutines for parsing
 	go func() {
 		for i := 0; i < *THREADS; i++ {
-			go parse()
+			wg.Add(1)
+			go urlParser()
 		}
+		wg.Done()
 	}()
 	//
-	go func(listOfURLs []string) {
-		for _, str := range listOfURLs {
-			parseCh.url <- str
+	wg.Add(1)
+	go func(urlList []string) {
+		for _, str := range urlList {
+			parseCh.url <- strings.TrimSuffix(str, "\n")
 		}
-	}(listOfURLs)
-
+		close(parseCh.url)
+		wg.Done()
+	}(urlList)
+	wg.Wait()
 }
