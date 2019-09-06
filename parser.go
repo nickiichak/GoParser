@@ -31,13 +31,10 @@ type parseChan struct {
 }
 
 var (
-	//THREADS - the number of threads
-	THREADS = flag.Int("tr", 2, "number of threads")
-	//URLFILE - the pass to the list of URLs
-	URLFILE = flag.String("url", "input.txt", "the pass to the list of URLs")
-	//RESFILE - the pass to the output file
-	RESFILE = flag.String("res", "output.txt", "the pass to the output file")
-	//Preparing channel
+	threads = flag.Int("tr", 4, "number of parsing threads")
+	urlFile = flag.String("url", "input.txt", "the pass to the list of URLs")
+	resFile = flag.String("res", "output.txt", "the pass to the output file")
+	//Preparing channels
 	parseURL = make(chan string)
 	parseRes = make(chan page)
 	parseErr = make(chan error)
@@ -48,9 +45,10 @@ var (
 	}
 )
 
+//Reads the list of URLs from urlFile
 func readURLs() ([]string, error) {
 	fmt.Println("Opening file with URLs...")
-	urlFile, err := os.OpenFile(*URLFILE, os.O_RDONLY, 0666)
+	urlFile, err := os.OpenFile(*urlFile, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +90,7 @@ func readURLs() ([]string, error) {
 	return urlList, nil
 }
 
+//Parse URLs from the list
 func urlParser() {
 	for url := range parseCh.url {
 		resp, err := http.Get(url)
@@ -106,16 +105,19 @@ func urlParser() {
 			continue
 		}
 
+		//Creating a container for the data
 		var pg page
 		pg.Meta.Headers = make(map[string][]string)
 		pg.Elements = make(map[string]int)
 
 		pg.URL = url
 		pg.Meta.Status = resp.StatusCode
+		//Copying info about HTTP headers
 		for k, val := range resp.Header {
 			pg.Meta.Headers[k] = val
 		}
 
+		//Loocking for HTML tags and counting their amount
 		var f func(*html.Node)
 		f = func(n *html.Node) {
 			if n.Type == html.ElementNode {
@@ -130,6 +132,7 @@ func urlParser() {
 	}
 }
 
+//Collects results from urlParser
 func collector(urlNumber int) []page {
 	resultList := make([]page, 0, urlNumber)
 	for i := 0; i < urlNumber; i++ {
@@ -138,14 +141,16 @@ func collector(urlNumber int) []page {
 			resultList = append(resultList, result)
 
 		case urlErr := <-parseCh.err:
+			fmt.Println("ERROR:")
 			fmt.Println(urlErr)
 		}
 	}
 	return resultList
 }
 
+//Encode slice of result structures to JSON and writes it to the resFile
 func output(result []page) {
-	file, err := os.Create(*RESFILE)
+	file, err := os.Create(*resFile)
 	if err != nil {
 		panic(err)
 	}
@@ -162,14 +167,18 @@ func output(result []page) {
 }
 
 func main() {
+	//Parsing comand line tags
 	flag.Parse()
+	fmt.Println("The number of threads = ", *threads)
+	fmt.Println("Inpute file = ", *urlFile)
+	fmt.Println("Outpute file = ", *resFile)
 	urlList, err := readURLs()
 	if err != nil {
 		panic(err)
 	}
-	//Creating THREADS number of goroutines for parsing
+	//Creating threads number of goroutines for parsing
 	go func() {
-		for i := 0; i < *THREADS; i++ {
+		for i := 0; i < *threads; i++ {
 			go urlParser()
 		}
 	}()
@@ -182,5 +191,4 @@ func main() {
 	}(urlList)
 	result := collector(len(urlList))
 	output(result)
-	fmt.Println(result)
 }
